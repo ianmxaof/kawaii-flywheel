@@ -174,6 +174,56 @@ const UnifiedProductionPipeline = () => {
     }
   };
 
+  // Parse script text into sections for template generator
+  const parseScriptSections = (scriptText, targetMinutes) => {
+    const lines = scriptText.split('\n').filter(line => line.trim());
+    const sections = [];
+    let currentSection = null;
+    
+    lines.forEach(line => {
+      const timestampMatch = line.match(/\[(\d{1,2}):(\d{2})\]/);
+      
+      if (timestampMatch) {
+        const minutes = parseInt(timestampMatch[1]);
+        const seconds = parseInt(timestampMatch[2]);
+        const totalSeconds = minutes * 60 + seconds;
+        
+        // Skip ad break markers
+        if (!line.toLowerCase().includes('ad break')) {
+          if (currentSection) {
+            sections.push(currentSection);
+          }
+          currentSection = {
+            timestamp: `${minutes}:${seconds.toString().padStart(2, '0')}`,
+            totalSeconds,
+            content: line
+          };
+        }
+      } else if (currentSection) {
+        currentSection.content += '\n' + line;
+      }
+    });
+    
+    // Add the last section
+    if (currentSection) {
+      sections.push(currentSection);
+    }
+    
+    // If no sections found, create default sections based on video length
+    if (sections.length === 0) {
+      const sectionDuration = (targetMinutes * 60) / 5; // 5 sections
+      for (let i = 0; i < 5; i++) {
+        sections.push({
+          timestamp: `${Math.floor((i * sectionDuration) / 60)}:${Math.floor((i * sectionDuration) % 60).toString().padStart(2, '0')}`,
+          totalSeconds: i * sectionDuration,
+          content: `Section ${i + 1}`
+        });
+      }
+    }
+    
+    return sections;
+  };
+
   // STAGE 5: Generate CapCut Template
   const generateCapCutTemplate = () => {
     if (!pipelineData.script) return;
@@ -181,11 +231,15 @@ const UnifiedProductionPipeline = () => {
     addLog('🎬 Building CapCut template...', 'processing');
     
     try {
+      // Parse script sections from text - REQUIRED by template generator
+      const sections = parseScriptSections(pipelineData.script.text, pipelineData.script.length);
+      
       const template = templateGenerator.generateTemplate(
         {
           script: pipelineData.script.text,
           targetMinutes: pipelineData.script.length,
           videoIdea: selectedIdea.title,
+          sections: sections, // Required - used by generateScreenRecordingSegments, generateOverlaySegments, generateSFXSegments
           adBreaks: pipelineData.script.adBreaks.map(t => ({
             timestamp: `${t}:00`,
             totalSeconds: t * 60
