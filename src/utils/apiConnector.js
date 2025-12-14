@@ -34,19 +34,25 @@ export class APIConnector {
     }
 
     return this.retryRequest(async () => {
-      const response = await fetch(CLAUDE_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.claudeApiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxTokens,
-          messages,
-        }),
-      });
+      let response;
+      try {
+        response = await fetch(CLAUDE_API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.claudeApiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true', // Required for CORS browser requests
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: maxTokens,
+            messages,
+          }),
+        });
+      } catch (fetchError) {
+        throw fetchError;
+      }
 
       if (!response.ok) {
         const error = await response.text();

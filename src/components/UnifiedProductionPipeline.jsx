@@ -14,6 +14,9 @@ const UnifiedProductionPipeline = () => {
   const [currentStage, setCurrentStage] = useState(0);
   const [ideaBank, setIdeaBank] = useState([]);
   const [selectedIdea, setSelectedIdea] = useState(null);
+  const [showAddIdeaModal, setShowAddIdeaModal] = useState(false);
+  const [newIdeaTitle, setNewIdeaTitle] = useState('');
+  const [newIdeaDescription, setNewIdeaDescription] = useState('');
   const [pipelineData, setPipelineData] = useState({
     script: null,
     qualityCheck: null,
@@ -45,20 +48,20 @@ const UnifiedProductionPipeline = () => {
   // Load idea bank from localStorage
   useEffect(() => {
     const saved = localStorage.getItem('ideaBank');
+    
     if (saved) {
       try {
-        setIdeaBank(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        setIdeaBank(parsed);
       } catch (error) {
         console.error('Failed to load idea bank:', error);
       }
     }
   }, []);
 
-  // Save idea bank to localStorage
+  // Save idea bank to localStorage whenever it changes
   useEffect(() => {
-    if (ideaBank.length > 0) {
-      localStorage.setItem('ideaBank', JSON.stringify(ideaBank));
-    }
+    localStorage.setItem('ideaBank', JSON.stringify(ideaBank));
   }, [ideaBank]);
 
   // Auto-scroll log
@@ -74,6 +77,23 @@ const UnifiedProductionPipeline = () => {
     }]);
   };
 
+  // Handle adding new idea from modal
+  const handleAddIdea = () => {
+    if (!newIdeaTitle.trim()) return;
+    
+    const newIdea = {
+      id: Date.now(),
+      title: newIdeaTitle.trim(),
+      description: newIdeaDescription.trim(),
+      created: new Date().toLocaleString()
+    };
+    
+    setIdeaBank(prev => [...prev, newIdea]);
+    setShowAddIdeaModal(false);
+    setNewIdeaTitle('');
+    setNewIdeaDescription('');
+  };
+
   // STAGE 1: Generate Script
   const generateScript = async () => {
     if (!selectedIdea) return;
@@ -84,7 +104,9 @@ const UnifiedProductionPipeline = () => {
     try {
       // First, analyze optimal length
       addLog('📊 Analyzing optimal video length...', 'processing');
+      
       const optimalLength = await apiConnector.analyzeOptimalLength(selectedIdea.title);
+      
       addLog(`✅ Optimal length: ${optimalLength} minutes`, 'success');
       
       // Generate script
@@ -174,56 +196,6 @@ const UnifiedProductionPipeline = () => {
     }
   };
 
-  // Parse script text into sections for template generator
-  const parseScriptSections = (scriptText, targetMinutes) => {
-    const lines = scriptText.split('\n').filter(line => line.trim());
-    const sections = [];
-    let currentSection = null;
-    
-    lines.forEach(line => {
-      const timestampMatch = line.match(/\[(\d{1,2}):(\d{2})\]/);
-      
-      if (timestampMatch) {
-        const minutes = parseInt(timestampMatch[1]);
-        const seconds = parseInt(timestampMatch[2]);
-        const totalSeconds = minutes * 60 + seconds;
-        
-        // Skip ad break markers
-        if (!line.toLowerCase().includes('ad break')) {
-          if (currentSection) {
-            sections.push(currentSection);
-          }
-          currentSection = {
-            timestamp: `${minutes}:${seconds.toString().padStart(2, '0')}`,
-            totalSeconds,
-            content: line
-          };
-        }
-      } else if (currentSection) {
-        currentSection.content += '\n' + line;
-      }
-    });
-    
-    // Add the last section
-    if (currentSection) {
-      sections.push(currentSection);
-    }
-    
-    // If no sections found, create default sections based on video length
-    if (sections.length === 0) {
-      const sectionDuration = (targetMinutes * 60) / 5; // 5 sections
-      for (let i = 0; i < 5; i++) {
-        sections.push({
-          timestamp: `${Math.floor((i * sectionDuration) / 60)}:${Math.floor((i * sectionDuration) % 60).toString().padStart(2, '0')}`,
-          totalSeconds: i * sectionDuration,
-          content: `Section ${i + 1}`
-        });
-      }
-    }
-    
-    return sections;
-  };
-
   // STAGE 5: Generate CapCut Template
   const generateCapCutTemplate = () => {
     if (!pipelineData.script) return;
@@ -231,15 +203,11 @@ const UnifiedProductionPipeline = () => {
     addLog('🎬 Building CapCut template...', 'processing');
     
     try {
-      // Parse script sections from text - REQUIRED by template generator
-      const sections = parseScriptSections(pipelineData.script.text, pipelineData.script.length);
-      
       const template = templateGenerator.generateTemplate(
         {
           script: pipelineData.script.text,
           targetMinutes: pipelineData.script.length,
           videoIdea: selectedIdea.title,
-          sections: sections, // Required - used by generateScreenRecordingSegments, generateOverlaySegments, generateSFXSegments
           adBreaks: pipelineData.script.adBreaks.map(t => ({
             timestamp: `${t}:00`,
             totalSeconds: t * 60
@@ -365,17 +333,12 @@ const UnifiedProductionPipeline = () => {
                 Idea Bank
               </h2>
               <button
-                onClick={() => {
-                  const title = prompt('Video idea title:');
-                  if (title) {
-                    const description = prompt('Brief description (optional):') || '';
-                    setIdeaBank(prev => [...prev, {
-                      id: Date.now(),
-                      title,
-                      description,
-                      created: new Date().toLocaleString()
-                    }]);
-                  }
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowAddIdeaModal(true);
+                  setNewIdeaTitle('');
+                  setNewIdeaDescription('');
                 }}
                 className="bg-yellow-600 hover:bg-yellow-500 text-white px-3 py-1 rounded-lg text-sm font-bold"
               >
@@ -1020,6 +983,93 @@ const UnifiedProductionPipeline = () => {
                 </div>
               ))}
               <div ref={logEndRef} />
+            </div>
+          </div>
+        )}
+
+        {/* Add Idea Modal */}
+        {showAddIdeaModal && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+            <div className="bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 rounded-2xl border-2 border-yellow-500 p-6 w-full max-w-md mx-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold text-yellow-300 flex items-center gap-2">
+                  <Lightbulb size={24} />
+                  Add New Idea
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowAddIdeaModal(false);
+                    setNewIdeaTitle('');
+                    setNewIdeaDescription('');
+                  }}
+                  className="text-yellow-400 hover:text-yellow-300 transition-colors"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-yellow-200 font-bold mb-2 text-sm">
+                    Video Idea Title *
+                  </label>
+                  <input
+                    type="text"
+                    value={newIdeaTitle}
+                    onChange={(e) => setNewIdeaTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newIdeaTitle.trim()) {
+                        e.preventDefault();
+                        document.getElementById('idea-description-input')?.focus();
+                      }
+                    }}
+                    placeholder="Enter your video idea..."
+                    className="w-full bg-black/40 border-2 border-yellow-500/50 rounded-xl px-4 py-3 text-yellow-100 placeholder-yellow-400/50 focus:outline-none focus:border-yellow-400 focus:ring-2 focus:ring-yellow-400/50"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-yellow-200 font-bold mb-2 text-sm">
+                    Brief Description (Optional)
+                  </label>
+                  <textarea
+                    id="idea-description-input"
+                    value={newIdeaDescription}
+                    onChange={(e) => setNewIdeaDescription(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.ctrlKey && newIdeaTitle.trim()) {
+                        e.preventDefault();
+                        handleAddIdea();
+                      }
+                    }}
+                    placeholder="Add a brief description..."
+                    rows={3}
+                    className="w-full bg-black/40 border-2 border-yellow-500/50 rounded-xl px-4 py-3 text-yellow-100 placeholder-yellow-400/50 focus:outline-none focus:border-yellow-400 focus:ring-2 focus:ring-yellow-400/50 resize-none"
+                  />
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      setShowAddIdeaModal(false);
+                      setNewIdeaTitle('');
+                      setNewIdeaDescription('');
+                    }}
+                    className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-xl transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddIdea}
+                    disabled={!newIdeaTitle.trim()}
+                    className="flex-1 bg-yellow-600 hover:bg-yellow-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                  >
+                    <Lightbulb size={18} />
+                    Add Idea
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
