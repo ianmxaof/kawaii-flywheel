@@ -72,7 +72,7 @@ export default function TextEditor({ layers, selectedLayer, onAddText, onUpdateT
   const isEditing = selectedLayer && selectedLayer.type === 'text';
 
   return (
-    <div className="bg-black/40 border border-pink-500/30 rounded-lg p-4 space-y-4" style={{ position: 'absolute', top: '1120px' }}>
+    <div className="bg-black/40 border border-pink-500/30 rounded-lg p-4 space-y-4 max-h-[calc(100vh-300px)] overflow-y-auto">
       <div className="flex items-center gap-2 mb-4">
         <Type className="text-pink-400" size={20} />
         <h3 className="text-pink-300 font-bold">

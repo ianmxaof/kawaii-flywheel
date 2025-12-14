@@ -1,7 +1,12 @@
-import ContentHub from './components/ContentHub'
+import UnifiedProductionPipeline from './components/UnifiedProductionPipeline'
+import './index.css'
 
 function App() {
-  return <ContentHub />
+  return (
+    <div className="App">
+      <UnifiedProductionPipeline />
+    </div>
+  )
 }
 
 export default App

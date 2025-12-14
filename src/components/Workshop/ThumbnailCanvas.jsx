@@ -69,9 +69,9 @@ export default function ThumbnailCanvas({ onImageAdd, canvasRef }) {
   }
 
   return (
-    <div className="flex gap-4 h-full">
+    <div className="flex gap-4" style={{ height: '100%', maxHeight: '600px' }}>
       {/* Gallery Sidebar */}
-      <div className="w-48 bg-black/40 border border-pink-500/30 rounded-lg p-4 overflow-y-auto">
+      <div className="w-48 bg-black/40 border border-pink-500/30 rounded-lg p-4 overflow-y-auto" style={{ maxHeight: '100%' }}>
         <h3 className="text-pink-300 font-bold mb-4">Drag to Canvas</h3>
         {images.length === 0 ? (
           <p className="text-pink-300/50 text-sm">No images in gallery</p>
@@ -104,12 +104,12 @@ export default function ThumbnailCanvas({ onImageAdd, canvasRef }) {
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col" style={{ maxHeight: '100%', overflow: 'hidden' }}>
         <div
           ref={ref}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
-          className="flex-1 bg-gray-900 border-2 border-pink-500 rounded-lg overflow-hidden relative"
+          className="bg-gray-900 border-2 border-pink-500 rounded-lg overflow-hidden relative flex-shrink-0"
           style={{
             width: CANVAS_WIDTH * SCALE,
             height: CANVAS_HEIGHT * SCALE,
