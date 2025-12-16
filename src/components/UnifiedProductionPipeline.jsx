@@ -1,13 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Lightbulb, FileText, TrendingUp, Mic, Camera, Film, Download, ChevronRight, Check, X, RefreshCw, Sparkles, Play, Zap } from 'lucide-react';
+import { Lightbulb, FileText, TrendingUp, Mic, Camera, Film, Download, ChevronRight, Check, X, RefreshCw, Sparkles, Play, Zap, Brain, BarChart3 } from 'lucide-react';
+import CoachPanel from './Coach/CoachPanel';
+import ShowrunnerPanel from './Showrunner/ShowrunnerPanel';
+import PlatformAtomizerPanel from './Atomizer/PlatformAtomizerPanel';
+import BRollMatchPanel from './Workshop/BRollMatchPanel';
 import { APIConnector } from '../utils/apiConnector';
 import { CapCutTemplateGenerator } from '../utils/capCutTemplateGenerator';
+import { SemanticCapCutGenerator } from '../utils/semanticCapCutGenerator';
+const semanticTemplateGenerator = new SemanticCapCutGenerator();
+import { SemanticAnalyzer } from '../utils/semanticAnalyzer';
 import { useProjects } from '../hooks/useProjects';
+import { useSemanticData } from '../hooks/useSemanticData';
 import ThumbnailCanvas from './Workshop/ThumbnailCanvas';
 import LayerPanel from './Workshop/LayerPanel';
 import TextEditor from './Workshop/TextEditor';
 import ExportPanel from './Workshop/ExportPanel';
 import AssetLibraryPanel from './Workshop/AssetLibraryPanel';
+import SemanticAnalysisPanel from './Pipeline/SemanticAnalysisPanel';
+import QualityCombinedPanel from './Pipeline/QualityCombinedPanel';
+import ElevenLabsVoiceoverUI from './Voiceover/ElevenLabsVoiceoverUI';
+import InlinePerchanceGen from './Thumbnail/InlinePerchanceGen';
 import { useCanvas } from '../hooks/useCanvas';
 
 const UnifiedProductionPipeline = () => {
@@ -19,21 +31,32 @@ const UnifiedProductionPipeline = () => {
   const [newIdeaDescription, setNewIdeaDescription] = useState('');
   const [pipelineData, setPipelineData] = useState({
     script: null,
+    semanticAnalysis: null,
     qualityCheck: null,
     voiceover: null,
     thumbnails: [],
     selectedThumbnail: null,
     template: null,
-    translations: {}
+    translations: {},
+    // New ContentContext fields
+    seriesPlan: null,
+    platformVariants: null,
+    brollMap: null,
+    coachSummary: null,
+    analyticsHistory: null
   });
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLog, setProcessingLog] = useState([]);
+  const [rightSidebarTab, setRightSidebarTab] = useState('status'); // 'status' or 'coach'
+  const [viewMode, setViewMode] = useState('pipeline'); // 'pipeline' or 'planning'
   const logEndRef = useRef(null);
   const canvasRef = useRef(null);
   const canvas = useCanvas();
   const apiConnector = new APIConnector();
   const templateGenerator = new CapCutTemplateGenerator();
+  const semanticAnalyzer = new SemanticAnalyzer();
   const { createProject } = useProjects();
+  const semanticData = useSemanticData();
 
   const stages = [
     { id: 0, name: 'Ideas', icon: Lightbulb, color: 'yellow' },
@@ -128,6 +151,26 @@ const UnifiedProductionPipeline = () => {
       
       addLog('✅ Script generated!', 'success');
       
+      // Run semantic analysis immediately after script generation
+      addLog('🧠 Analyzing script semantics...', 'processing');
+      try {
+        const analysisResult = await semanticAnalyzer.analyzeScriptSemantics(
+          script.text,
+          script.length
+        );
+        
+        setPipelineData(prev => ({
+          ...prev,
+          semanticAnalysis: analysisResult
+        }));
+        
+        semanticData.setAnalysis(analysisResult);
+        addLog('✅ Semantic analysis complete!', 'success');
+      } catch (error) {
+        addLog(`⚠️ Semantic analysis failed: ${error.message}`, 'warning');
+        console.error('Semantic analysis error:', error);
+      }
+      
       // Auto-advance to quality check
       setCurrentStage(2);
       setTimeout(() => runQualityCheck(script.text, script.length), 500);
@@ -140,7 +183,7 @@ const UnifiedProductionPipeline = () => {
     }
   };
 
-  // STAGE 2: Quality Check
+  // STAGE 2: Quality Check (Combined Virality + Semantic)
   const runQualityCheck = async (scriptText, length) => {
     setIsProcessing(true);
     addLog('🔮 Analyzing virality potential...', 'processing');
@@ -151,17 +194,34 @@ const UnifiedProductionPipeline = () => {
         selectedIdea.title
       );
       
+      // Get semantic analysis if available
+      const semanticAnalysis = pipelineData.semanticAnalysis;
+      
+      // Calculate combined score
+      const semanticAnalyzer = new SemanticAnalyzer();
+      const semanticScore = semanticAnalysis 
+        ? semanticAnalyzer.calculateSemanticScore(semanticAnalysis)
+        : 50;
+      
+      const combinedScore = Math.round(
+        (viralityData.viralityScore * 0.6) + (semanticScore * 0.4)
+      );
+      
       setPipelineData(prev => ({
         ...prev,
         qualityCheck: {
-          score: viralityData.viralityScore,
+          score: combinedScore,
+          viralityScore: viralityData.viralityScore,
+          semanticScore: semanticScore,
+          viralityData: viralityData,
           analysis: viralityData.analysis,
-          passed: viralityData.viralityScore >= 60,
+          passed: combinedScore >= 60,
           lengthOptimal: length >= 8 && length <= 12
         }
       }));
       
-      addLog(`✅ Virality Score: ${viralityData.viralityScore}/100`, viralityData.viralityScore >= 70 ? 'success' : 'warning');
+      addLog(`✅ Combined Quality Score: ${combinedScore}/100`, combinedScore >= 70 ? 'success' : 'warning');
+      addLog(`   Virality: ${viralityData.viralityScore}/100 | Semantic: ${semanticScore}/100`, 'info');
       
     } catch (error) {
       addLog(`❌ Quality check failed: ${error.message}`, 'error');
@@ -196,25 +256,42 @@ const UnifiedProductionPipeline = () => {
     }
   };
 
-  // STAGE 5: Generate CapCut Template
-  const generateCapCutTemplate = () => {
+  // STAGE 5: Generate CapCut Template (Semantic)
+  const generateCapCutTemplate = async () => {
     if (!pipelineData.script) return;
     
-    addLog('🎬 Building CapCut template...', 'processing');
+    setIsProcessing(true);
+    addLog('🎬 Building semantic CapCut template...', 'processing');
     
     try {
-      const template = templateGenerator.generateTemplate(
-        {
-          script: pipelineData.script.text,
-          targetMinutes: pipelineData.script.length,
-          videoIdea: selectedIdea.title,
-          adBreaks: pipelineData.script.adBreaks.map(t => ({
-            timestamp: `${t}:00`,
-            totalSeconds: t * 60
-          }))
-        },
-        selectedIdea.title
-      );
+      const scriptData = {
+        script: pipelineData.script.text,
+        targetMinutes: pipelineData.script.length,
+        videoIdea: selectedIdea.title,
+        adBreaks: pipelineData.script.adBreaks.map(t => ({
+          timestamp: `${t}:00`,
+          totalSeconds: t * 60
+        }))
+      };
+
+      const voiceoverDuration = pipelineData.voiceover?.duration 
+        ? pipelineData.voiceover.duration / 60 
+        : pipelineData.script.length;
+
+      // Use semantic template generator if semantic analysis available
+      let template;
+      if (pipelineData.semanticAnalysis) {
+        template = await semanticTemplateGenerator.generateSemanticTemplate(
+          scriptData,
+          voiceoverDuration,
+          pipelineData.semanticAnalysis
+        );
+        addLog('✅ Semantic template generated with intelligent markers', 'success');
+      } else {
+        // Fallback to basic generator
+        template = templateGenerator.generateTemplate(scriptData, selectedIdea.title);
+        addLog('✅ Basic template generated (no semantic analysis available)', 'success');
+      }
       
       setPipelineData(prev => ({
         ...prev,
@@ -226,6 +303,8 @@ const UnifiedProductionPipeline = () => {
     } catch (error) {
       addLog(`❌ Template generation failed: ${error.message}`, 'error');
       console.error('Template generation error:', error);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -282,10 +361,40 @@ const UnifiedProductionPipeline = () => {
         
         {/* Header */}
         <div className="bg-black/40 backdrop-blur-xl rounded-2xl border-2 border-purple-500 p-6 mb-4">
-          <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 mb-2">
-            ⚡ PRODUCTION PIPELINE
-          </h1>
-          <p className="text-purple-300">Idea → Script → Quality → Voice → Thumbnail → Template → Export</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 mb-2">
+                ⚡ PRODUCTION PIPELINE
+              </h1>
+              <p className="text-purple-300">
+                {viewMode === 'pipeline' 
+                  ? 'Idea → Script → Quality → Voice → Thumbnail → Template → Export'
+                  : 'Weekly Planning & Series Architecture'}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setViewMode('pipeline')}
+                className={`px-4 py-2 rounded-lg font-bold transition-all ${
+                  viewMode === 'pipeline'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-900/30 text-purple-300 hover:bg-purple-900/50'
+                }`}
+              >
+                Pipeline
+              </button>
+              <button
+                onClick={() => setViewMode('planning')}
+                className={`px-4 py-2 rounded-lg font-bold transition-all ${
+                  viewMode === 'planning'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-900/30 text-purple-300 hover:bg-purple-900/50'
+                }`}
+              >
+                Planning
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Pipeline Progress Bar */}
@@ -323,7 +432,21 @@ const UnifiedProductionPipeline = () => {
         </div>
 
         {/* Main Content Area */}
-        <div className="grid grid-cols-12 gap-4">
+        {viewMode === 'planning' ? (
+          <div className="bg-black/40 backdrop-blur-xl rounded-2xl border-2 border-purple-500 p-6 h-[calc(100vh-280px)] overflow-y-auto">
+            <ShowrunnerPanel
+              ideaBank={ideaBank}
+              onSeriesCreated={(seriesPlan) => {
+                setPipelineData(prev => ({
+                  ...prev,
+                  seriesPlan
+                }));
+                addLog(`✅ Series "${seriesPlan.title}" created with ${seriesPlan.episodes?.length || 0} episodes`, 'success');
+              }}
+            />
+          </div>
+        ) : (
+          <div className="grid grid-cols-12 gap-4">
           
           {/* Left Sidebar: Idea Bank */}
           <div className="col-span-3 bg-black/40 backdrop-blur-xl rounded-2xl border-2 border-yellow-500 p-4 h-[calc(100vh-280px)] overflow-y-auto">
@@ -467,10 +590,17 @@ const UnifiedProductionPipeline = () => {
                         Regenerate
                       </button>
                       <button
-                        onClick={() => setCurrentStage(2)}
+                        onClick={() => {
+                          // Show semantic analysis if available, otherwise go to quality check
+                          if (pipelineData.semanticAnalysis) {
+                            setCurrentStage(1.5); // Stage 2.5 for semantic analysis
+                          } else {
+                            setCurrentStage(2);
+                          }
+                        }}
                         className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl"
                       >
-                        Continue to Quality Check
+                        {pipelineData.semanticAnalysis ? 'View Analysis →' : 'Continue to Quality Check →'}
                         <ChevronRight size={18} className="inline ml-2" />
                       </button>
                     </div>
@@ -479,65 +609,75 @@ const UnifiedProductionPipeline = () => {
               </div>
             )}
 
-            {/* STAGE 2: QUALITY CHECK */}
+            {/* STAGE 2.5: SEMANTIC ANALYSIS */}
+            {currentStage === 1.5 && (
+              <div className="space-y-4">
+                <h2 className="text-2xl font-bold text-purple-300 flex items-center gap-2">
+                  <Brain size={28} />
+                  Semantic Analysis
+                </h2>
+
+                {!pipelineData.semanticAnalysis ? (
+                  <div className="text-center py-16">
+                    <RefreshCw size={48} className="animate-spin text-purple-500 mx-auto mb-4" />
+                    <p className="text-purple-300">Analyzing script semantics...</p>
+                  </div>
+                ) : (
+                  <div>
+                    <SemanticAnalysisPanel 
+                      analysis={pipelineData.semanticAnalysis}
+                      durationMinutes={pipelineData.script?.length || 10}
+                    />
+
+                    <div className="flex gap-2 mt-4">
+                      <button
+                        onClick={() => setCurrentStage(1)}
+                        className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl"
+                      >
+                        ← Back to Script
+                      </button>
+                      <button
+                        onClick={() => setCurrentStage(2)}
+                        className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl"
+                      >
+                        Continue to Quality Check →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* STAGE 2: QUALITY CHECK (Combined) */}
             {currentStage === 2 && (
               <div className="space-y-4">
                 <h2 className="text-2xl font-bold text-green-300 flex items-center gap-2">
                   <TrendingUp size={28} />
-                  Quality Check
+                  Quality Check (Virality + Semantic)
                 </h2>
 
                 {!pipelineData.qualityCheck ? (
                   <div className="text-center py-16">
                     <RefreshCw size={48} className="animate-spin text-green-500 mx-auto mb-4" />
-                    <p className="text-green-300">Analyzing script for virality & monetization...</p>
+                    <p className="text-green-300">Analyzing script for virality & semantic quality...</p>
                   </div>
                 ) : (
-                  <div>
-                    <div className={`text-center mb-6 p-8 rounded-xl ${
-                      pipelineData.qualityCheck.passed
-                        ? 'bg-green-900/30 border-2 border-green-500'
-                        : 'bg-red-900/30 border-2 border-red-500'
-                    }`}>
-                      <div className={`text-7xl font-black mb-2 ${
-                        pipelineData.qualityCheck.score >= 70 ? 'text-green-400' :
-                        pipelineData.qualityCheck.score >= 50 ? 'text-yellow-400' :
-                        'text-red-400'
-                      }`}>
-                        {pipelineData.qualityCheck.score}/100
-                      </div>
-                      <div className="text-green-200 font-bold">
-                        {pipelineData.qualityCheck.passed ? '✓ Ready for Production' : '✗ Needs Improvement'}
-                      </div>
-                    </div>
-
-                    <div className="bg-green-950/50 rounded-xl p-4 border border-green-500 mb-4">
-                      <pre className="text-green-200 text-sm whitespace-pre-wrap">
-                        {pipelineData.qualityCheck.analysis}
-                      </pre>
-                    </div>
-
-                    <div className="flex gap-2">
-                      {!pipelineData.qualityCheck.passed && (
-                        <button
-                          onClick={() => {
-                            setCurrentStage(1);
-                            setPipelineData(prev => ({ ...prev, script: null, qualityCheck: null }));
-                          }}
-                          className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl"
-                        >
-                          ← Regenerate Script
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setCurrentStage(3)}
-                        disabled={!pipelineData.qualityCheck.passed}
-                        className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 text-white font-bold py-3 rounded-xl"
-                      >
-                        Proceed to Voiceover →
-                      </button>
-                    </div>
-                  </div>
+                  <QualityCombinedPanel
+                    viralityResult={pipelineData.qualityCheck.viralityData}
+                    semanticAnalysis={pipelineData.semanticAnalysis}
+                    onRegenerate={() => {
+                      setCurrentStage(1);
+                      setPipelineData(prev => ({ 
+                        ...prev, 
+                        script: null, 
+                        qualityCheck: null,
+                        semanticAnalysis: null,
+                        platformVariants: null,
+                        brollMap: null
+                      }));
+                    }}
+                    onProceed={() => setCurrentStage(3)}
+                  />
                 )}
               </div>
             )}
@@ -550,73 +690,18 @@ const UnifiedProductionPipeline = () => {
                   Voiceover Generation
                 </h2>
 
-                <div className="bg-yellow-900/30 border border-yellow-500 rounded-xl p-4 mb-4">
-                  <p className="text-yellow-200 text-sm">
-                    ⚠️ Voiceover generation requires Python backend running on localhost:5000
-                  </p>
-                </div>
-
-                <div className="bg-purple-950/50 rounded-xl p-6 border border-purple-500">
-                  <h3 className="font-bold text-purple-200 mb-4">Options:</h3>
-                  
-                  <div className="space-y-3">
-                    <button 
-                      onClick={async () => {
-                        try {
-                          addLog('🎤 Fetching available voices...', 'processing');
-                          const voices = await apiConnector.getVoices(true);
-                          if (voices.length > 0) {
-                            const result = await apiConnector.generateVoiceover(
-                              pipelineData.script,
-                              voices[0].voice_id,
-                              'voiceover.mp3'
-                            );
-                            setPipelineData(prev => ({
-                              ...prev,
-                              voiceover: {
-                                status: 'generated',
-                                duration: pipelineData.script.length * 60,
-                                format: 'mp3',
-                                downloadUrl: result.download_url,
-                                filename: 'voiceover.mp3'
-                              }
-                            }));
-                            addLog('✅ Voiceover generated', 'success');
-                          }
-                        } catch (error) {
-                          addLog(`❌ Voiceover failed: ${error.message}`, 'error');
-                        }
-                      }}
-                      disabled={!pipelineData.script}
-                      className="w-full bg-purple-700 hover:bg-purple-600 disabled:bg-gray-700 text-white font-bold py-3 rounded-xl text-left px-4"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-bold">ElevenLabs API (Recommended)</div>
-                          <div className="text-sm opacity-80">AI anime-style voice, $5/month</div>
-                        </div>
-                        <Play size={20} />
-                      </div>
-                    </button>
-
-                    <button className="w-full bg-purple-700 hover:bg-purple-600 text-white font-bold py-3 rounded-xl text-left px-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-bold">Record Your Own</div>
-                          <div className="text-sm opacity-80">More authentic, free</div>
-                        </div>
-                        <Mic size={20} />
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setCurrentStage(4)}
-                      className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl"
-                    >
-                      Skip for Now & Continue →
-                    </button>
-                  </div>
-                </div>
+                <ElevenLabsVoiceoverUI
+                  script={pipelineData.script}
+                  semanticGuide={pipelineData.semanticAnalysis}
+                  onVoiceoverGenerated={(data) => {
+                    setPipelineData(prev => ({
+                      ...prev,
+                      voiceover: data
+                    }));
+                    addLog('✅ Voiceover generated successfully', 'success');
+                  }}
+                  onSkip={() => setCurrentStage(4)}
+                />
               </div>
             )}
 
@@ -675,6 +760,17 @@ const UnifiedProductionPipeline = () => {
                     </div>
                   </div>
                 )}
+
+                {/* Inline Perchance Generator */}
+                <InlinePerchanceGen
+                  onImageAdd={(image) => {
+                    canvas.addLayer({
+                      type: 'image',
+                      ...image,
+                    });
+                    addLog('✅ Image added to canvas', 'success');
+                  }}
+                />
                 
                 {/* Thumbnail Workshop Layout */}
                 <div className="flex-1 grid grid-cols-12 gap-4 min-h-0">
@@ -745,29 +841,121 @@ const UnifiedProductionPipeline = () => {
               <div className="space-y-4">
                 <h2 className="text-2xl font-bold text-indigo-300 flex items-center gap-2">
                   <Film size={28} />
-                  CapCut Template
+                  CapCut Template (Semantic)
                 </h2>
 
+                {/* B-Roll Matchmaker */}
+                {pipelineData.semanticAnalysis && (
+                  <div className="bg-indigo-950/30 rounded-xl p-4 border border-indigo-500">
+                    <BRollMatchPanel
+                      semanticAnalysis={pipelineData.semanticAnalysis}
+                      onAssetSelected={(asset, timestamp) => {
+                        // Update brollMap in pipelineData
+                        setPipelineData(prev => {
+                          const existingMap = prev.brollMap || [];
+                          const existingMatch = existingMap.find(m => m.timestamp === timestamp);
+                          
+                          if (existingMatch) {
+                            // Add to existing match
+                            if (!existingMatch.matchedAssetIds.includes(asset.id)) {
+                              existingMatch.matchedAssetIds.push(asset.id);
+                            }
+                          } else {
+                            // Create new match
+                            existingMap.push({
+                              timestamp,
+                              suggestion: '',
+                              matchedAssetIds: [asset.id]
+                            });
+                          }
+                          
+                          return {
+                            ...prev,
+                            brollMap: existingMap
+                          };
+                        });
+                      }}
+                    />
+                  </div>
+                )}
+
                 {!pipelineData.template ? (
-                  <button
-                    onClick={() => {
-                      generateCapCutTemplate();
-                      setCurrentStage(6);
-                    }}
-                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-black text-xl py-4 rounded-xl transition-all flex items-center justify-center gap-2"
-                  >
-                    <Sparkles size={24} />
-                    Generate CapCut Template
-                  </button>
+                  <div className="space-y-4">
+                    {pipelineData.semanticAnalysis && (
+                      <div className="bg-green-900/30 border border-green-500 rounded-xl p-4">
+                        <p className="text-green-200 text-sm">
+                          ✓ Semantic analysis available - will generate intelligent template with:
+                        </p>
+                        <ul className="text-green-300 text-xs mt-2 list-disc list-inside">
+                          <li>Emotional arc-based music pacing</li>
+                          <li>Key moment markers</li>
+                          <li>Pattern interrupt suggestions</li>
+                          <li>B-roll placement</li>
+                          <li>Viral optimization markers</li>
+                        </ul>
+                      </div>
+                    )}
+                    
+                    <button
+                      onClick={generateCapCutTemplate}
+                      disabled={isProcessing}
+                      className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-gray-700 disabled:to-gray-800 text-white font-black text-xl py-4 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <RefreshCw size={24} className="animate-spin" />
+                          Generating Template...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={24} />
+                          Generate {pipelineData.semanticAnalysis ? 'Semantic' : 'CapCut'} Template
+                        </>
+                      )}
+                    </button>
+                  </div>
                 ) : (
                   <div>
                     <div className="bg-indigo-950/50 rounded-xl p-4 border border-indigo-500 mb-4">
                       <h3 className="font-bold text-indigo-200 mb-3">Template Structure:</h3>
                       <div className="space-y-2 text-indigo-300 text-sm">
-                        <div>📹 Video Tracks: {pipelineData.template.tracks?.length || 0}</div>
-                        <div>🎵 Audio Tracks: {pipelineData.template.audio_tracks?.length || 0}</div>
+                        <div>📹 Video Tracks: {pipelineData.template.timeline?.tracks?.length || pipelineData.template.tracks?.length || 0}</div>
+                        <div>🎵 Audio Tracks: {pipelineData.template.timeline?.tracks?.filter(t => t.type === 'audio').length || pipelineData.template.audio_tracks?.length || 0}</div>
                         <div>💰 Ad Breaks: {pipelineData.script?.adBreaks.length || 0}</div>
+                        {pipelineData.template.viral_markers && (
+                          <div>⚡ Viral Markers: {pipelineData.template.viral_markers.length}</div>
+                        )}
+                        {pipelineData.template.broll_suggestions && (
+                          <div>🎬 B-roll Suggestions: {pipelineData.template.broll_suggestions.length}</div>
+                        )}
                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      <button
+                        onClick={() => {
+                          semanticTemplateGenerator.exportTemplate(
+                            pipelineData.template,
+                            selectedIdea?.title || 'template'
+                          );
+                          addLog('✅ Template JSON exported', 'success');
+                        }}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl"
+                      >
+                        Download JSON Template
+                      </button>
+                      <button
+                        onClick={() => {
+                          semanticTemplateGenerator.exportEditingGuide(
+                            pipelineData.template,
+                            selectedIdea?.title || 'template'
+                          );
+                          addLog('✅ Editing guide exported', 'success');
+                        }}
+                        className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl"
+                      >
+                        Download Editing Guide
+                      </button>
                     </div>
 
                     <button
@@ -788,6 +976,20 @@ const UnifiedProductionPipeline = () => {
                   <Download size={28} />
                   Export & Production
                 </h2>
+
+                {/* Multi-Platform Atomizer */}
+                <div className="bg-cyan-950/30 rounded-xl p-6 border border-cyan-500">
+                  <PlatformAtomizerPanel
+                    script={pipelineData.script}
+                    semanticAnalysis={pipelineData.semanticAnalysis}
+                    onVariantsGenerated={(variants) => {
+                      setPipelineData(prev => ({
+                        ...prev,
+                        platformVariants: variants
+                      }));
+                    }}
+                  />
+                </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <button
@@ -835,12 +1037,18 @@ const UnifiedProductionPipeline = () => {
                   onClick={() => {
                     setPipelineData({
                       script: null,
+                      semanticAnalysis: null,
                       qualityCheck: null,
                       voiceover: null,
                       thumbnails: [],
                       selectedThumbnail: null,
                       template: null,
-                      translations: {}
+                      translations: {},
+                      seriesPlan: null,
+                      platformVariants: null,
+                      brollMap: null,
+                      coachSummary: null,
+                      analyticsHistory: null
                     });
                     canvas.clearCanvas();
                     setCurrentStage(0);
@@ -855,9 +1063,38 @@ const UnifiedProductionPipeline = () => {
             )}
           </div>
 
-          {/* Right Sidebar: Project Status */}
-          <div className="col-span-3 bg-black/40 backdrop-blur-xl rounded-2xl border-2 border-purple-500 p-4 h-[calc(100vh-280px)] overflow-y-auto">
-            <h2 className="text-xl font-bold text-purple-300 mb-4">Project Status</h2>
+          {/* Right Sidebar: Project Status / Coach */}
+          <div className="col-span-3 bg-black/40 backdrop-blur-xl rounded-2xl border-2 border-purple-500 p-4 h-[calc(100vh-280px)] overflow-y-auto flex flex-col">
+            {/* Tab Switcher */}
+            <div className="flex gap-2 mb-4 border-b border-purple-700 pb-2">
+              <button
+                onClick={() => setRightSidebarTab('status')}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all ${
+                  rightSidebarTab === 'status'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-900/30 text-purple-300 hover:bg-purple-900/50'
+                }`}
+              >
+                <BarChart3 size={16} className="inline mr-2" />
+                Status
+              </button>
+              <button
+                onClick={() => setRightSidebarTab('coach')}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all ${
+                  rightSidebarTab === 'coach'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-900/30 text-purple-300 hover:bg-purple-900/50'
+                }`}
+              >
+                <Brain size={16} className="inline mr-2" />
+                Coach
+              </button>
+            </div>
+
+            {/* Tab Content */}
+            {rightSidebarTab === 'status' ? (
+              <>
+                <h2 className="text-xl font-bold text-purple-300 mb-4">Project Status</h2>
 
             <div className="space-y-3">
               <div className={`p-3 rounded-lg border ${
@@ -960,8 +1197,23 @@ const UnifiedProductionPipeline = () => {
                 Export All
               </button>
             </div>
+              </>
+            ) : (
+              <div className="flex-1 overflow-y-auto">
+                <CoachPanel
+                  pipelineData={pipelineData}
+                  onUpdateCoachSummary={(summary) => {
+                    setPipelineData(prev => ({
+                      ...prev,
+                      coachSummary: summary
+                    }));
+                  }}
+                />
+              </div>
+            )}
           </div>
         </div>
+        )}
 
         {/* Processing Log */}
         {processingLog.length > 0 && (

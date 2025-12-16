@@ -1,4 +1,4 @@
-const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+import { modelRouter } from './modelRouter';
 
 /**
  * Unified API connector for all external services
@@ -9,6 +9,7 @@ export class APIConnector {
     this.backendUrl = import.meta.env.VITE_ELEVENLABS_BACKEND_URL || 'http://localhost:5000';
     this.maxRetries = 3;
     this.retryDelay = 2000;
+    this.modelRouter = modelRouter;
   }
 
   /**
@@ -26,41 +27,18 @@ export class APIConnector {
   }
 
   /**
-   * Make Claude API request
+   * Make Claude API request (deprecated - use ModelRouter instead)
+   * Kept for backward compatibility
    */
   async callClaudeAPI(messages, maxTokens = 4000, model = 'claude-sonnet-4-20250514') {
-    if (!this.claudeApiKey) {
-      throw new Error('Claude API key is required. Set VITE_CLAUDE_API_KEY in .env');
-    }
-
+    // Use ModelRouter with a generic task type
     return this.retryRequest(async () => {
-      let response;
-      try {
-        response = await fetch(CLAUDE_API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this.claudeApiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true', // Required for CORS browser requests
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: maxTokens,
-            messages,
-          }),
-        });
-      } catch (fetchError) {
-        throw fetchError;
-      }
-
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Claude API error: ${error}`);
-      }
-
-      const data = await response.json();
-      return data.content[0].text;
+      return await this.modelRouter.chat({
+        task: 'small_explanation',
+        messages,
+        maxTokens,
+        useCache: false
+      });
     });
   }
 
@@ -70,10 +48,12 @@ export class APIConnector {
    * Analyze optimal video length for a given idea
    */
   async analyzeOptimalLength(idea) {
-    const response = await this.callClaudeAPI([
-      {
-        role: 'user',
-        content: `Analyze this video idea and determine optimal length for maximum engagement and monetization:
+    const response = await this.modelRouter.chat({
+      task: 'small_explanation',
+      messages: [
+        {
+          role: 'user',
+          content: `Analyze this video idea and determine optimal length for maximum engagement and monetization:
 
 "${idea}"
 
@@ -84,8 +64,11 @@ Consider:
 - Monetization balance (longer = more ads, but retention drops)
 
 Respond with ONLY a number between 8-15 representing optimal minutes.`
-      }
-    ], 500);
+        }
+      ],
+      maxTokens: 500,
+      useCache: false
+    });
 
     const lengthMatch = response.match(/\d+/);
     return lengthMatch ? parseInt(lengthMatch[0]) : 10;
@@ -96,11 +79,14 @@ Respond with ONLY a number between 8-15 representing optimal minutes.`
    */
   async generateScript(idea, length, style = 'tutorial') {
     const wordCount = length * 150;
+    const scriptHash = this.modelRouter._hashString(idea + length + style);
     
-    const response = await this.callClaudeAPI([
-      {
-        role: 'user',
-        content: `Generate a ${length}-minute YouTube script optimized for monetization.
+    const response = await this.modelRouter.chat({
+      task: 'semantic_analysis', // Using semantic_analysis task for script generation
+      messages: [
+        {
+          role: 'user',
+          content: `Generate a ${length}-minute YouTube script optimized for monetization.
 
 TOPIC: "${idea}"
 
@@ -118,8 +104,13 @@ Style: Anime automation channel, edgy but helpful
 Character: Kawaii anime girl voice
 
 Total words: ~${wordCount} (2.5 words/sec)`
-      }
-    ], 4000);
+        }
+      ],
+      maxTokens: 4000,
+      scriptHash,
+      persona: style,
+      useCache: true
+    });
 
     return {
       text: response,
@@ -132,41 +123,68 @@ Total words: ~${wordCount} (2.5 words/sec)`
 
   /**
    * Predict virality score for script and idea
+   * Uses robust ViralityPredictor class
    */
   async predictVirality(script, idea) {
-    const scriptHook = typeof script === 'string' ? script.substring(0, 500) : script.text?.substring(0, 500) || '';
+    const { ViralityPredictor } = await import('./viralityPredictor');
+    const predictor = new ViralityPredictor();
     
-    const response = await this.callClaudeAPI([
-      {
-        role: 'user',
-        content: `Analyze this YouTube video for virality potential.
-
-TITLE: "${idea}"
-
-SCRIPT HOOK: ${scriptHook}
-
-Rate 0-100 based on:
-1. Hook strength (curiosity gap, emotional trigger)
-2. Title clickability (but not clickbait)
-3. Topic trend alignment (automation/AI is trending)
-4. Script pacing (pattern interrupts, retention hooks)
-5. Unique angle (contrarian take, fresh perspective)
-
-Respond with:
-SCORE: [number 0-100]
-STRENGTHS: [2-3 bullet points]
-IMPROVEMENTS: [2-3 specific fixes]
-PREDICTED VIEWS (7 days): [estimate]`
-      }
-    ], 1000);
-
-    const scoreMatch = response.match(/SCORE:\s*(\d+)/);
-    const score = scoreMatch ? parseInt(scoreMatch[1]) : 50;
+    const scriptText = typeof script === 'string' ? script : script.text || '';
+    const scriptLength = typeof script === 'string' 
+      ? Math.ceil(scriptText.split(' ').length / 150) // Estimate from word count
+      : script.length || 10;
+    
+    const result = await predictor.predictVirality({
+      title: idea,
+      scriptText,
+      length: scriptLength,
+      thumbnailConcept: null,
+      targetAudience: 'productivity enthusiasts',
+      contentType: 'tutorial'
+    });
 
     return {
-      viralityScore: score,
-      analysis: response
+      viralityScore: result.score,
+      breakdown: result.breakdown,
+      fatalFlaws: result.fatalFlaws,
+      improvements: result.improvements,
+      viewPrediction: result.viewPrediction,
+      confidence: result.confidence,
+      monetizationPotential: result.monetizationPotential,
+      analysis: this.formatAnalysisText(result)
     };
+  }
+
+  /**
+   * Format analysis result as readable text
+   */
+  formatAnalysisText(result) {
+    let text = `VIRALITY SCORE: ${result.score}/100\n\n`;
+    
+    text += `SCORE BREAKDOWN:\n`;
+    Object.entries(result.breakdown).forEach(([key, value]) => {
+      text += `- ${key.charAt(0).toUpperCase() + key.slice(1)}: ${Math.round(value * 100)}%\n`;
+    });
+    
+    if (result.fatalFlaws.length > 0) {
+      text += `\nFATAL FLAWS:\n`;
+      result.fatalFlaws.forEach(flaw => {
+        text += `- [${flaw.severity.toUpperCase()}] ${flaw.message}\n`;
+      });
+    }
+    
+    if (result.improvements.length > 0) {
+      text += `\nTOP IMPROVEMENTS:\n`;
+      result.improvements.slice(0, 5).forEach(imp => {
+        text += `- ${imp.suggestion}\n`;
+      });
+    }
+    
+    text += `\nVIEW PREDICTION:\n`;
+    text += `Week 1: ${result.viewPrediction.week1.min.toLocaleString()} - ${result.viewPrediction.week1.max.toLocaleString()} views\n`;
+    text += `Potential: ${result.viewPrediction.potential}\n`;
+    
+    return text;
   }
 
   /**
@@ -175,11 +193,14 @@ PREDICTED VIEWS (7 days): [estimate]`
   async generateThumbnailConcepts(script) {
     const scriptText = typeof script === 'string' ? script : script.text || '';
     const scriptHook = scriptText.substring(0, 600);
+    const scriptHash = this.modelRouter._hashString(scriptHook);
 
-    const response = await this.callClaudeAPI([
-      {
-        role: 'user',
-        content: `Based on this video script, generate 3 thumbnail concepts that maximize CTR.
+    const response = await this.modelRouter.chat({
+      task: 'small_explanation',
+      messages: [
+        {
+          role: 'user',
+          content: `Based on this video script, generate 3 thumbnail concepts that maximize CTR.
 
 SCRIPT HOOK: ${scriptHook}
 
@@ -207,8 +228,12 @@ Color: [hex codes]
 
 CONCEPT 2: ...
 CONCEPT 3: ...`
-      }
-    ], 1500);
+        }
+      ],
+      maxTokens: 1500,
+      scriptHash,
+      useCache: true
+    });
 
     // Parse concepts
     const conceptMatches = response.match(/CONCEPT \d+:([\s\S]*?)(?=CONCEPT \d+:|$)/g) || [];
@@ -243,10 +268,13 @@ CONCEPT 3: ...`
       }
 
       try {
-        const response = await this.callClaudeAPI([
-          {
-            role: 'user',
-            content: `Translate this YouTube script to ${langNames[lang]}.
+        const scriptHash = this.modelRouter._hashString(scriptText + lang);
+        const response = await this.modelRouter.chat({
+          task: 'semantic_analysis',
+          messages: [
+            {
+              role: 'user',
+              content: `Translate this YouTube script to ${langNames[lang]}.
 
 IMPORTANT: 
 - Maintain all [TIMESTAMP] markers exactly
@@ -259,8 +287,13 @@ ORIGINAL SCRIPT:
 ${scriptText}
 
 Provide full translated script with timestamps.`
-          }
-        ], 4000);
+            }
+          ],
+          maxTokens: 4000,
+          scriptHash,
+          persona: lang,
+          useCache: true
+        });
 
         translations[lang] = response;
       } catch (error) {
@@ -278,7 +311,7 @@ Provide full translated script with timestamps.`
    * Get available voices from ElevenLabs
    */
   async getVoices(animeOnly = false) {
-    const endpoint = animeOnly ? '/api/anime-voices' : '/api/voices';
+    const endpoint = animeOnly ? '/api/voiceover/anime-voices' : '/api/voiceover/voices';
     
     return this.retryRequest(async () => {
       const response = await fetch(`${this.backendUrl}${endpoint}`);
@@ -295,11 +328,11 @@ Provide full translated script with timestamps.`
   /**
    * Generate voiceover from script
    */
-  async generateVoiceover(script, voiceId, outputName = 'voiceover.mp3') {
+  async generateVoiceover(script, voiceId, outputName = 'voiceover.mp3', settings = {}) {
     const scriptText = typeof script === 'string' ? script : script.text || '';
     
     return this.retryRequest(async () => {
-      const response = await fetch(`${this.backendUrl}/api/generate`, {
+      const response = await fetch(`${this.backendUrl}/api/voiceover/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -308,6 +341,7 @@ Provide full translated script with timestamps.`
           script: scriptText,
           voice_id: voiceId,
           output_name: outputName,
+          settings: settings
         }),
       });
 
@@ -350,7 +384,7 @@ Provide full translated script with timestamps.`
    * Download generated voiceover file
    */
   async downloadVoiceover(filename) {
-    const response = await fetch(`${this.backendUrl}/api/download/${filename}`);
+    const response = await fetch(`${this.backendUrl}/api/voiceover/download/${filename}`);
     
     if (!response.ok) {
       throw new Error(`Download failed: ${response.statusText}`);
