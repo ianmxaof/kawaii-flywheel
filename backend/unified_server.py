@@ -31,6 +31,18 @@ except ImportError as e:
     print("Make sure modules directory exists with handler files")
     sys.exit(1)
 
+# Import virality engine modules
+try:
+    from core.idea_core import IdeaCore
+    from core.trend_context import TrendContext
+    from core.decision_object import DecisionObject
+    from core.cognitive_budget import CognitiveLoadBudget
+    from trends.trend_prior_engine import TrendPriorEngine
+    virality_engine_available = True
+except ImportError as e:
+    print(f"⚠️  Warning: Virality engine modules not available: {e}")
+    virality_engine_available = False
+
 app = Flask(__name__)
 CORS(app)  # Allow React app to connect
 
@@ -45,6 +57,20 @@ except Exception as e:
     voiceover = None
     perchance = None
     semantic = None
+
+# Initialize virality engine
+trend_engine = None
+coach_engine = None
+if virality_engine_available:
+    try:
+        trend_engine = TrendPriorEngine()
+        from coach.coach_engine import CoachEngine
+        coach_engine = CoachEngine()
+        print("✅ Trend engine and coach engine initialized")
+    except Exception as e:
+        print(f"⚠️  Warning: Virality engine initialization error: {e}")
+        trend_engine = None
+        coach_engine = None
 
 # ==================== HEALTH CHECK ====================
 
@@ -124,6 +150,171 @@ def clear_gallery():
 def analyze_script():
     """Semantic analysis (note: runs in frontend)"""
     return semantic.analyze(request.json)
+
+# ==================== VIRALITY ENGINE ENDPOINTS ====================
+
+@app.route('/api/idea/normalize', methods=['POST'])
+def normalize_idea():
+    """Normalize raw idea input into IdeaCore"""
+    if not virality_engine_available:
+        return jsonify({"error": "Virality engine not available"}), 503
+    
+    try:
+        data = request.json
+        raw_input = data.get('raw_input', '')
+        
+        if not raw_input:
+            return jsonify({"error": "raw_input is required"}), 400
+        
+        # For MVP, use basic extraction (no model router in backend)
+        # Frontend can call this and enhance with model router
+        idea_core = IdeaCore._basic_extraction(raw_input, None)
+        
+        return jsonify(idea_core.to_dict())
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+@app.route('/api/trends/compute', methods=['GET'])
+def compute_trends():
+    """Compute trend context for a core claim"""
+    if not virality_engine_available or trend_engine is None:
+        return jsonify({"error": "Trend engine not available"}), 503
+    
+    try:
+        core_claim = request.args.get('core_claim', '')
+        
+        if not core_claim:
+            return jsonify({"error": "core_claim parameter is required"}), 400
+        
+        # Compute trend prior
+        trend_context = trend_engine.compute_trend_prior(core_claim)
+        
+        return jsonify(trend_context.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/decision/create', methods=['POST'])
+def create_decision():
+    """Create a decision object from idea core and trend context"""
+    if not virality_engine_available:
+        return jsonify({"error": "Virality engine not available"}), 503
+    
+    try:
+        data = request.json
+        idea_core_dict = data.get('idea_core', {})
+        trend_context_dict = data.get('trend_context', {})
+        
+        if not idea_core_dict:
+            return jsonify({"error": "idea_core is required"}), 400
+        
+        # Create IdeaCore and TrendContext from dicts
+        idea_core = IdeaCore.from_dict(idea_core_dict)
+        trend_context = TrendContext.from_dict(trend_context_dict) if trend_context_dict else None
+        
+        # Calculate cognitive budget
+        budgeter = CognitiveLoadBudget()
+        if trend_context:
+            cognitive_budget = budgeter.calculate(trend_context, idea_core)
+        else:
+            cognitive_budget = 3  # Default
+        
+        # Create decision object
+        decision = DecisionObject(
+            idea_core_id=f"idea_{hash(str(idea_core_dict))}",
+            trend_context_id=f"trend_{hash(str(trend_context_dict))}" if trend_context_dict else "none",
+            cognitive_budget=cognitive_budget
+        )
+        
+        return jsonify(decision.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ==================== COACH MODE ENDPOINTS ====================
+
+@app.route('/api/coach/add-episode', methods=['POST'])
+def add_episode():
+    """Add a new episode with predicted or actual metrics"""
+    if not virality_engine_available or coach_engine is None:
+        return jsonify({"error": "Coach engine not available"}), 503
+    
+    try:
+        episode_data = request.json
+        if not episode_data:
+            return jsonify({"error": "Episode data is required"}), 400
+        
+        episode_id = coach_engine.add_episode(episode_data)
+        return jsonify({"status": "success", "episode_id": episode_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/coach/analyze/<int:episode_num>', methods=['GET'])
+def analyze_episode(episode_num):
+    """Analyze a specific episode"""
+    if not virality_engine_available or coach_engine is None:
+        return jsonify({"error": "Coach engine not available"}), 503
+    
+    try:
+        analysis = coach_engine.analyze_episode(episode_num)
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/coach/learning-arc', methods=['GET'])
+def get_learning_arc():
+    """Get complete learning trajectory"""
+    if not virality_engine_available or coach_engine is None:
+        return jsonify({"error": "Coach engine not available"}), 503
+    
+    try:
+        learning_arc = coach_engine.get_learning_arc()
+        return jsonify(learning_arc)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/coach/predict-next', methods=['POST'])
+def predict_next():
+    """Predict metrics for next episode"""
+    if not virality_engine_available or coach_engine is None:
+        return jsonify({"error": "Coach engine not available"}), 503
+    
+    try:
+        data = request.json
+        idea_core_dict = data.get('idea_core', {})
+        trend_context_dict = data.get('trend_context', {})
+        decision_object = data.get('decision_object')
+        
+        if not idea_core_dict or not trend_context_dict:
+            return jsonify({"error": "idea_core and trend_context are required"}), 400
+        
+        idea_core = IdeaCore.from_dict(idea_core_dict)
+        trend_context = TrendContext.from_dict(trend_context_dict)
+        
+        predicted_metrics = coach_engine.predict_metrics(
+            idea_core,
+            trend_context,
+            decision_object
+        )
+        
+        return jsonify(predicted_metrics)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/coach/update-metrics/<int:episode_num>', methods=['POST'])
+def update_episode_metrics(episode_num):
+    """Update episode with actual metrics (for Episode 10)"""
+    if not virality_engine_available or coach_engine is None:
+        return jsonify({"error": "Coach engine not available"}), 503
+    
+    try:
+        actual_metrics = request.json
+        if not actual_metrics:
+            return jsonify({"error": "Actual metrics are required"}), 400
+        
+        coach_engine.tracker.update_episode_metrics(episode_num, actual_metrics)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ==================== LEGACY ENDPOINTS (for backward compatibility) ====================
 

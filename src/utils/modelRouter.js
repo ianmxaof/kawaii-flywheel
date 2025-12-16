@@ -60,6 +60,27 @@ const TASK_CONFIGS = {
     temperature: 0.7,
     fallbackMaxTokens: 128,
     simplifiedPrompt: true
+  },
+  idea_normalization: {
+    primaryProvider: 'claude',
+    maxTokens: 1500,
+    temperature: 0.7,
+    fallbackMaxTokens: 1000,
+    simplifiedPrompt: true
+  },
+  thumbnail_claims: {
+    primaryProvider: 'claude',
+    maxTokens: 800,
+    temperature: 0.8,
+    fallbackMaxTokens: 600,
+    simplifiedPrompt: true
+  },
+  narration: {
+    primaryProvider: 'claude',
+    maxTokens: 2000,
+    temperature: 0.8,
+    fallbackMaxTokens: 1500,
+    simplifiedPrompt: true
   }
 };
 
@@ -358,6 +379,124 @@ export class ModelRouter {
     return {
       size: this.cache.size,
       keys: Array.from(this.cache.keys())
+    };
+  }
+
+  /**
+   * Get consensus from multiple models
+   * Calls multiple models in parallel and returns weighted consensus
+   * 
+   * @param {Object} params
+   * @param {string} params.task - Task type
+   * @param {Array} params.messages - Array of message objects
+   * @param {number} [params.numModels=2] - Number of models to use (2 for MVP: Claude + GPT-4)
+   * @param {number} [params.maxTokens] - Override max tokens
+   * @param {string} [params.scriptHash] - Hash for caching
+   * @param {Object} [params.options] - Additional options
+   * @returns {Promise<Object>} Consensus result with confidence score
+   */
+  async getConsensus({ task, messages, numModels = 2, maxTokens, scriptHash, options = {} }) {
+    const config = TASK_CONFIGS[task];
+    if (!config) {
+      throw new Error(`Unknown task type: ${task}`);
+    }
+
+    // Model weights per task type
+    const weights = {
+      'idea_normalization': { claude: 0.6, gpt4: 0.4 },
+      'thumbnail_claims': { claude: 0.5, gpt4: 0.5 },
+      'narration': { claude: 0.6, gpt4: 0.4 },
+      'coach_mode': { claude: 0.6, gpt4: 0.4 }
+    };
+
+    const taskWeights = weights[task] || { claude: 0.6, gpt4: 0.4 };
+
+    // Determine which models to use
+    const availableModels = [];
+    if (this.claudeApiKey && taskWeights.claude > 0) {
+      availableModels.push({ name: 'claude', weight: taskWeights.claude });
+    }
+    if (this.openaiApiKey && taskWeights.gpt4 > 0) {
+      availableModels.push({ name: 'gpt4', weight: taskWeights.gpt4 });
+    }
+
+    // Limit to numModels
+    const modelsToUse = availableModels.slice(0, numModels);
+
+    if (modelsToUse.length === 0) {
+      throw new Error('No models available for consensus');
+    }
+
+    // Call all models in parallel
+    const promises = modelsToUse.map(async (model) => {
+      try {
+        const result = await this._callProvider(model.name, {
+          task,
+          messages,
+          maxTokens: maxTokens || config.maxTokens,
+          config,
+          attempt: 1
+        });
+        return { model: model.name, result, weight: model.weight, success: true };
+      } catch (error) {
+        console.warn(`[ModelRouter] Consensus: ${model.name} failed:`, error.message);
+        return { model: model.name, result: null, weight: model.weight, success: false, error: error.message };
+      }
+    });
+
+    const results = await Promise.all(promises);
+
+    // Filter successful results
+    const successfulResults = results.filter(r => r.success && r.result);
+
+    if (successfulResults.length === 0) {
+      throw new Error('All models failed in consensus call');
+    }
+
+    // Calculate weighted consensus
+    // For text responses, we'll use the highest weighted model's response
+    // In a more sophisticated implementation, we could parse and merge responses
+    let consensusResult = null;
+    let totalWeight = 0;
+    let maxWeight = 0;
+    let bestModel = null;
+
+    for (const result of successfulResults) {
+      totalWeight += result.weight;
+      if (result.weight > maxWeight) {
+        maxWeight = result.weight;
+        bestModel = result.model;
+        consensusResult = result.result;
+      }
+    }
+
+    // Calculate confidence based on agreement
+    // For MVP, confidence is based on number of successful models
+    let confidence = 0.5; // Base confidence
+    if (successfulResults.length === 2) {
+      // Both models agreed (both succeeded)
+      confidence = 0.85;
+    } else if (successfulResults.length === 1) {
+      // Only one model succeeded
+      confidence = 0.65;
+    }
+
+    // Detect outliers (high-confidence minority opinions)
+    // For MVP, we'll just note if there's disagreement
+    const hasDisagreement = successfulResults.length < modelsToUse.length;
+
+    return {
+      result: consensusResult,
+      confidence,
+      modelsUsed: successfulResults.map(r => r.model),
+      bestModel,
+      totalWeight,
+      hasDisagreement,
+      allResults: successfulResults.map(r => ({
+        model: r.model,
+        weight: r.weight,
+        success: r.success
+      }))
     };
   }
 }
