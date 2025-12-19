@@ -5,8 +5,11 @@ Coordinates trend data fetching and creates TrendContext
 
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from backend.core.trend_context import TrendContext
-from backend.trends.google_trends import GoogleTrendsFetcher
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from core.trend_context import TrendContext
+from .google_trends import GoogleTrendsFetcher
 
 
 class TrendPriorEngine:

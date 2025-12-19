@@ -252,7 +252,19 @@ def add_episode():
 def analyze_episode(episode_num):
     """Analyze a specific episode"""
     if not virality_engine_available or coach_engine is None:
-        return jsonify({"error": "Coach engine not available"}), 503
+        # Return a helpful message instead of error (200 status, not 503)
+        return jsonify({
+            "primary_insight": {
+                "type": "info",
+                "message": "Coach Mode is ready! Create your first episode to get AI-powered insights.",
+                "action": "Add an episode using the pipeline to start learning",
+                "priority": "low"
+            },
+            "insights": [],
+            "episode_num": episode_num,
+            "predicted_metrics": None,
+            "actual_metrics": None
+        }), 200
     
     try:
         analysis = coach_engine.analyze_episode(episode_num)
@@ -264,7 +276,13 @@ def analyze_episode(episode_num):
 def get_learning_arc():
     """Get complete learning trajectory"""
     if not virality_engine_available or coach_engine is None:
-        return jsonify({"error": "Coach engine not available"}), 503
+        # Return empty learning arc instead of error (200 status, not 503)
+        return jsonify({
+            "episodes": [],
+            "patterns": [],
+            "accuracy": {"has_actuals": False, "message": "No episodes yet"},
+            "total_episodes": 0
+        }), 200
     
     try:
         learning_arc = coach_engine.get_learning_arc()

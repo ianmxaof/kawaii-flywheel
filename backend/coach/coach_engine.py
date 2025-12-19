@@ -4,9 +4,12 @@ Extracts patterns and generates recommendations
 """
 
 from typing import Dict, Any, List, Optional
-from backend.coach.episode_tracker import EpisodeTracker
-from backend.core.idea_core import IdeaCore
-from backend.core.trend_context import TrendContext
+from .episode_tracker import EpisodeTracker
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from core.idea_core import IdeaCore
+from core.trend_context import TrendContext
 
 
 class CoachEngine:
@@ -108,7 +111,19 @@ class CoachEngine:
         """
         episode = self.tracker.get_episode(episode_num)
         if not episode:
-            return {'error': f'Episode {episode_num} not found'}
+            # Return helpful message instead of error
+            return {
+                'episode_num': episode_num,
+                'primary_insight': {
+                    'type': 'info',
+                    'message': f'Episode {episode_num} not found. Create your first episode to start learning!',
+                    'action': 'Use the pipeline to create and track your first episode',
+                    'priority': 'low'
+                },
+                'insights': [],
+                'predicted_metrics': None,
+                'actual_metrics': None
+            }
         
         insights = []
         

@@ -5,8 +5,8 @@ Based on trend confidence, urgency, and user experience level
 
 from dataclasses import dataclass
 from typing import Optional
-from backend.core.trend_context import TrendContext
-from backend.core.idea_core import IdeaCore, TimeSensitivity
+from .trend_context import TrendContext
+from .idea_core import IdeaCore, TimeSensitivity
 
 
 @dataclass

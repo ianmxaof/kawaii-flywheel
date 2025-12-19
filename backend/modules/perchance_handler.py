@@ -10,12 +10,21 @@ from flask import jsonify
 import base64
 import time
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 # Fix Windows console encoding
 if sys.platform == 'win32':
     import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    try:
+        # Only fix encoding if stdout has a buffer attribute
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    except (AttributeError, TypeError):
+        # If buffer doesn't exist or is already a writer, skip encoding fix
+        pass
 
 
 class PerchanceHandler:
@@ -26,6 +35,7 @@ class PerchanceHandler:
         self.browser = None
         self.page = None
         self.gallery = []
+        self.executor = None
         
         # Try to import Playwright
         try:
@@ -33,29 +43,205 @@ class PerchanceHandler:
             self.playwright = sync_playwright
             self.PlaywrightTimeout = PlaywrightTimeout
             self.playwright_available = True
+            # Create a thread pool executor for Playwright operations
+            self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="playwright")
             print("✅ Playwright available for Perchance automation")
         except ImportError:
             print("⚠️  Playwright not installed. Perchance features disabled.")
             print("   Install with: pip install playwright && playwright install chromium")
             self.playwright_available = False
     
-    def start_browser(self):
-        """Initialize Playwright browser"""
-        if not self.playwright_available:
-            raise Exception("Playwright not available. Install with: pip install playwright")
-        
-        if not self.browser:
-            playwright = self.playwright().start()
-            self.browser = playwright.chromium.launch(headless=True)
-            self.page = self.browser.new_page()
-            self.page.set_viewport_size({"width": 1920, "height": 1080})
     
-    def close_browser(self):
-        """Clean up browser resources"""
-        if self.browser:
-            self.browser.close()
-            self.browser = None
-            self.page = None
+    def _generate_in_thread(self, prompt, negative_prompt, aspect_ratio, num_images, style, model):
+        """Internal method to run Playwright operations in isolated thread"""
+        playwright = self.playwright().start()
+        browser = None
+        page = None
+        
+        try:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_viewport_size({"width": 1920, "height": 1080})
+            
+            # Navigate to Perchance generator
+            url = f"https://perchance.org/{model}"
+            print(f"🌐 Opening {url}")
+            page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # Wait for page to load
+            try:
+                page.wait_for_selector("#promptTextarea", timeout=15000)
+            except:
+                try:
+                    page.wait_for_selector("textarea", timeout=15000)
+                except:
+                    raise Exception("Could not find prompt textarea on Perchance page")
+            
+            # Fill in prompt
+            print(f"✏️  Entering prompt: {prompt[:50]}...")
+            try:
+                page.fill("#promptTextarea", prompt)
+            except:
+                page.fill("textarea", prompt)
+            
+            # Fill negative prompt if exists
+            if negative_prompt:
+                try:
+                    page.fill("#negativePromptTextarea", negative_prompt)
+                except:
+                    print("⚠️  Negative prompt field not found")
+            
+            # Set aspect ratio if available
+            if aspect_ratio:
+                try:
+                    aspect_set = False
+                    
+                    # Try dropdown/select elements
+                    try:
+                        select_element = page.query_selector("select")
+                        if select_element:
+                            options = select_element.query_selector_all("option")
+                            for option in options:
+                                option_value = option.get_attribute("value") or option.inner_text()
+                                if aspect_ratio.lower() in option_value.lower() or option_value.lower() in aspect_ratio.lower():
+                                    select_element.select_option(option_value)
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via select")
+                                    aspect_set = True
+                                    break
+                    except:
+                        pass
+                    
+                    # Try buttons with data attributes or text
+                    if not aspect_set:
+                        try:
+                            aspect_buttons = page.query_selector_all("button")
+                            for btn in aspect_buttons:
+                                btn_text = btn.inner_text().lower()
+                                btn_data = btn.get_attribute("data-aspect") or btn.get_attribute("data-value") or ""
+                                if aspect_ratio.lower() in btn_text or aspect_ratio in btn_data:
+                                    btn.click()
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via button")
+                                    aspect_set = True
+                                    break
+                        except:
+                            pass
+                    
+                    # Try input elements
+                    if not aspect_set:
+                        try:
+                            inputs = page.query_selector_all("input[type='radio'], input[type='checkbox']")
+                            for inp in inputs:
+                                inp_value = inp.get_attribute("value") or ""
+                                if aspect_ratio.lower() in inp_value.lower():
+                                    inp.click()
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via input")
+                                    aspect_set = True
+                                    break
+                        except:
+                            pass
+                    
+                    if not aspect_set:
+                        print(f"⚠️  Could not set aspect ratio '{aspect_ratio}' - UI may have changed")
+                except Exception as e:
+                    print(f"⚠️  Error setting aspect ratio: {e}")
+            
+            # Set style if available
+            if style:
+                try:
+                    style_prompt = f"{style} style, {prompt}"
+                    try:
+                        page.fill("#promptTextarea", style_prompt)
+                    except:
+                        page.fill("textarea", style_prompt)
+                    print(f"✓ Style '{style}' applied to prompt")
+                except Exception as e:
+                    print(f"⚠️  Could not set style: {e}")
+            
+            # Click generate button
+            try:
+                generate_button = page.locator("button:has-text('Generate')")
+                generate_button.click()
+                print("🚀 Generation started...")
+            except:
+                try:
+                    page.click("button[type='submit']")
+                except:
+                    raise Exception("Could not find generate button")
+            
+            # Wait for images to generate
+            generated_images = []
+            max_wait = 90  # seconds - increased timeout
+            start_time = time.time()
+            
+            while len(generated_images) < num_images and (time.time() - start_time) < max_wait:
+                try:
+                    image_elements = page.query_selector_all("img")
+                    
+                    for img_elem in image_elements:
+                        img_src = img_elem.get_attribute("src")
+                        
+                        if not img_src or img_src.startswith("data:image/svg"):
+                            continue
+                        
+                        if any(img['src'] == img_src for img in generated_images):
+                            continue
+                        
+                        try:
+                            if img_src.startswith("data:image"):
+                                image_data = img_src
+                            else:
+                                response = page.request.get(img_src)
+                                image_bytes = response.body()
+                                image_data = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+                            
+                            generated_images.append({
+                                'id': f"img_{len(generated_images)}_{int(time.time())}",
+                                'src': img_src,
+                                'data': image_data,
+                                'prompt': prompt,
+                                'negative_prompt': negative_prompt,
+                                'aspect_ratio': aspect_ratio,
+                                'style': style,
+                                'generated_at': time.time()
+                            })
+                            
+                            print(f"✓ Image {len(generated_images)}/{num_images} captured")
+                            
+                            if len(generated_images) >= num_images:
+                                break
+                        except Exception as e:
+                            print(f"⚠️  Failed to process image: {e}")
+                            continue
+                except Exception as e:
+                    print(f"⚠️  Error finding images: {e}")
+                
+                time.sleep(1)
+            
+            if len(generated_images) == 0:
+                raise Exception("No images were generated. Check if Perchance UI changed.")
+            
+            print(f"✅ Generated {len(generated_images)} images")
+            
+            # Save images to temp directory
+            saved_paths = self.save_images_to_directory(generated_images)
+            
+            return {
+                'success': True,
+                'images': [
+                    {
+                        'id': img['id'],
+                        'data': img['data'],
+                        'download_url': f"/api/perchance/download/{img['id']}"
+                    }
+                    for img in generated_images
+                ],
+                'saved_paths': saved_paths
+            }
+            
+        finally:
+            if browser:
+                browser.close()
+            playwright.stop()
     
     def generate(self, data):
         """Generate images from Perchance"""
@@ -73,7 +259,22 @@ class PerchanceHandler:
             return jsonify({"error": "Prompt is required"}), 400
         
         try:
-            self.start_browser()
+            # Run Playwright operations in isolated thread
+            future = self.executor.submit(
+                self._generate_in_thread,
+                prompt, negative_prompt, aspect_ratio, num_images, style, model
+            )
+            
+            # Wait for result with timeout
+            result = future.result(timeout=120)  # 2 minute timeout
+            
+            return jsonify(result)
+            
+        except FutureTimeout:
+            return jsonify({"error": "Image generation timed out. Please try again."}), 500
+        except Exception as e:
+            print(f"❌ Error during generation: {e}")
+            return jsonify({"error": str(e)}), 500
             
             # Navigate to Perchance generator
             url = f"https://perchance.org/{model}"
@@ -104,6 +305,75 @@ class PerchanceHandler:
                     self.page.fill("#negativePromptTextarea", negative_prompt)
                 except:
                     print("⚠️  Negative prompt field not found")
+            
+            # Set aspect ratio if available
+            if aspect_ratio:
+                try:
+                    # Perchance uses various UI elements for aspect ratio
+                    # Try common selectors and interaction patterns
+                    aspect_set = False
+                    
+                    # Try dropdown/select elements
+                    try:
+                        select_element = self.page.query_selector("select")
+                        if select_element:
+                            options = select_element.query_selector_all("option")
+                            for option in options:
+                                option_value = option.get_attribute("value") or option.inner_text()
+                                if aspect_ratio.lower() in option_value.lower() or option_value.lower() in aspect_ratio.lower():
+                                    select_element.select_option(option_value)
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via select")
+                                    aspect_set = True
+                                    break
+                    except:
+                        pass
+                    
+                    # Try buttons with data attributes or text
+                    if not aspect_set:
+                        try:
+                            aspect_buttons = self.page.query_selector_all("button")
+                            for btn in aspect_buttons:
+                                btn_text = btn.inner_text().lower()
+                                btn_data = btn.get_attribute("data-aspect") or btn.get_attribute("data-value") or ""
+                                if aspect_ratio.lower() in btn_text or aspect_ratio in btn_data:
+                                    btn.click()
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via button")
+                                    aspect_set = True
+                                    break
+                        except:
+                            pass
+                    
+                    # Try input elements
+                    if not aspect_set:
+                        try:
+                            inputs = self.page.query_selector_all("input[type='radio'], input[type='checkbox']")
+                            for inp in inputs:
+                                inp_value = inp.get_attribute("value") or ""
+                                if aspect_ratio.lower() in inp_value.lower():
+                                    inp.click()
+                                    print(f"✓ Aspect ratio set to {aspect_ratio} via input")
+                                    aspect_set = True
+                                    break
+                        except:
+                            pass
+                    
+                    if not aspect_set:
+                        print(f"⚠️  Could not set aspect ratio '{aspect_ratio}' - UI may have changed")
+                except Exception as e:
+                    print(f"⚠️  Error setting aspect ratio: {e}")
+            
+            # Set style if available
+            if style:
+                try:
+                    # Add style to prompt (most reliable method)
+                    style_prompt = f"{style} style, {prompt}"
+                    try:
+                        self.page.fill("#promptTextarea", style_prompt)
+                    except:
+                        self.page.fill("textarea", style_prompt)
+                    print(f"✓ Style '{style}' applied to prompt")
+                except Exception as e:
+                    print(f"⚠️  Could not set style: {e}")
             
             # Click generate button
             try:
@@ -178,25 +448,6 @@ class PerchanceHandler:
             # Save images to temp directory
             saved_paths = self.save_images_to_directory(generated_images)
             
-            return jsonify({
-                'success': True,
-                'images': [
-                    {
-                        'id': img['id'],
-                        'data': img['data'],  # base64
-                        'download_url': f"/api/perchance/download/{img['id']}"
-                    }
-                    for img in generated_images
-                ],
-                'saved_paths': saved_paths
-            })
-            
-        except Exception as e:
-            print(f"❌ Error during generation: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            # Don't close browser - keep it open for faster subsequent requests
-            pass
     
     def save_images_to_directory(self, images, output_dir="temp_generated"):
         """Save generated images to file system"""

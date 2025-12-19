@@ -36,6 +36,18 @@ export default function CoachPanel({ pipelineData, onUpdateCoachSummary }) {
       const response = await fetch(`${API_BASE}/api/coach/analyze/${episodeToAnalyze}`);
       
       if (!response.ok) {
+        // If service unavailable (503), it means coach engine isn't initialized
+        // but we still get a helpful message
+        if (response.status === 503) {
+          const errorData = await response.json().catch(() => ({}));
+          if (errorData.primary_insight) {
+            // Backend returned a helpful message
+            setPrimaryInsight(errorData.primary_insight);
+            setFullAnalysis(errorData);
+            setIsAnalyzing(false);
+            return;
+          }
+        }
         // If episode doesn't exist, try to get learning arc
         if (response.status === 404) {
           const arcResponse = await fetch(`${API_BASE}/api/coach/learning-arc`);
